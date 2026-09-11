@@ -416,8 +416,8 @@ struct BrokerStatus {
     bool alive = false;
     uint64_t tick = 0;
     uint32_t pid = 0;
-    std::wstring versionsOffice;
-    std::wstring howFound;
+    std::wstring sofficePath;   // from the heartbeat: what the broker will use
+    bool sofficeFound = false;
 };
 
 BrokerStatus ReadBrokerStatus(uint64_t maxAgeMs) {
@@ -429,8 +429,8 @@ BrokerStatus ReadBrokerStatus(uint64_t maxAgeMs) {
     uint32_t pidValue = 0;
     lop::ParseDecU32(ini.Get("pid", ""), pidValue);
     status.pid = pidValue;
-    status.versionsOffice = lop::Utf8ToWide(ini.Get("soffice", ""));
-    status.howFound = lop::Utf8ToWide(ini.Get("soffice_found", ""));
+    status.sofficePath = lop::Utf8ToWide(ini.Get("soffice", ""));
+    status.sofficeFound = ini.Get("soffice_found", "0") == "1";
     const uint64_t now = lopw::NowUnixMs();
     status.alive = status.tick != 0 && now > status.tick && now - status.tick < maxAgeMs;
     return status;
@@ -1285,7 +1285,9 @@ BOOL Wh_ModInit() {
     const BrokerStatus broker = ReadBrokerStatus(20000);
     lopw::LogI(L"Explorer broker: " + std::wstring(broker.alive ? L"running" : L"not running") +
                (broker.pid ? L" (pid " + lopw::Num(broker.pid) + L")" : L"") +
-               (broker.versionsOffice.empty() ? L"" : L", LibreOffice " + broker.versionsOffice));
+               (broker.sofficePath.empty() ? L""
+                                           : L", soffice " + broker.sofficePath +
+                                                 (broker.sofficeFound ? L"" : L" (not found!)")));
 
     if (!WindhawkUtils::SetFunctionHook(CoCreateInstance, CoCreateInstance_Hook,
                                         &CoCreateInstance_Original)) {

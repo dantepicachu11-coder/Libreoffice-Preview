@@ -67,7 +67,7 @@ you select a file):
 ```
 LOPreview 0.5.0 in prevhost.exe (pid 4321, integrity low (4096))
 PDF preview handler: {A5A41CC7-02CB-41D4-8C9B-9087040D6098} (found via UserChoice(...))
-Explorer broker: running (pid 1234), LibreOffice C:\Program Files\...
+Explorer broker: running (pid 1234), soffice C:\Program Files\LibreOffice\program\soffice.exe
 CoCreateInstance hook installed
 ```
 
