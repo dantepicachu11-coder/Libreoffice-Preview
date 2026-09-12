@@ -60,6 +60,17 @@ after publishing (delete `%LOCALAPPDATA%\LOPreview\cache\*.pdf` and retry) and a
 handler that requires a file name in `Stat()` (the generated stream includes one,
 so this would be new information).
 
+## The pane still shows the PDF handler's own error message
+
+"The PDF could not be displayed/previewed due to an internal error" is the *PDF
+preview handler* talking: it was handed something that is not a PDF. In 0.5.0
+that can only happen after the client log says
+`IInitializeWithStream::Initialize failed on the generated PDF` or
+`cached PDF was rejected by the handler` (both print the HRESULT - please report
+it). If those lines are absent, the **old 0.4 build is still active**: check the
+version stamps described in `TESTING.md` §0. 0.4 forwards the ODF stream itself,
+which produces exactly this message.
+
 ## Nothing happens at all / no log lines from prevhost
 
 * Confirm the mod is enabled for `prevhost.exe` (not `*`).

@@ -99,6 +99,7 @@ struct LoggerState {
     HANDLE file = INVALID_HANDLE_VALUE;
     std::wstring path;
     std::wstring role;
+    std::wstring version;
     int level = kLogInfo;
     unsigned long long bytesWritten = 0;
 };
@@ -108,13 +109,17 @@ inline LoggerState& LogState() {
     return s;
 }
 
-inline void LogInit(const std::wstring& role) {
+// `version` is stamped onto every line so that a log excerpt always says which
+// build produced it.  (Version 0.4 and 0.5 share the same Windhawk mod id, so
+// without this a pasted log could not be attributed to a build.)
+inline void LogInit(const std::wstring& role, const std::wstring& version = std::wstring()) {
     LoggerState& s = LogState();
     if (!s.csInit) {
         InitializeCriticalSection(&s.cs);
         s.csInit = true;
     }
     s.role = role;
+    s.version = version;
 }
 
 inline void LogSetLevel(int level) {
@@ -147,9 +152,13 @@ inline bool LogSetFile(const std::wstring& path) {
     }
     if (s.file != INVALID_HANDLE_VALUE) {
         s.bytesWritten = 0;
-        const char* mark = "\xEF\xBB\xBF--- LOPreview log opened ---\r\n";
+        std::string mark = "\xEF\xBB\xBF--- LOPreview log opened (";
+        mark += s.version.empty() ? "unknown version" : lop::WideToUtf8(s.version);
+        mark += " ";
+        mark += s.role.empty() ? "unknown role" : lop::WideToUtf8(s.role);
+        mark += ") ---\r\n";
         DWORD written = 0;
-        WriteFile(s.file, mark, 39, &written, nullptr);
+        WriteFile(s.file, mark.data(), static_cast<DWORD>(mark.size()), &written, nullptr);
     }
     return s.file != INVALID_HANDLE_VALUE;
 }
@@ -172,7 +181,12 @@ inline void LogLine(int level, const std::wstring& text) {
     LoggerState& s = LogState();
     if (level > s.level) return;
     const wchar_t* tag = level == kLogError ? L"E" : (level == kLogWarn ? L"W" : L"I");
-    std::wstring line = std::wstring(L"[") + tag + L"] " + text;
+    std::wstring prefix = s.version;
+    if (!prefix.empty() && !s.role.empty()) prefix += L" ";
+    prefix += s.role;
+    std::wstring line = std::wstring(L"[") + tag;
+    if (!prefix.empty()) line += L" " + prefix;
+    line += L"] " + text;
     if (level == kLogError) {
         Wh_Log(L"ERROR %s", line.c_str());
     } else if (level == kLogWarn) {

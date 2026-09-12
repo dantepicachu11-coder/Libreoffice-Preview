@@ -586,7 +586,7 @@ void RunMaintenance() {
 DWORD WINAPI BrokerThread(LPVOID) {
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     g_broker.startTick = GetTickCount64();
-    lopw::LogInit(L"broker");
+    lopw::LogInit(L"broker", kModVersion);
     g_broker.cfg = lopw::LoadConfig();
     lopw::LogSetLevel(CfgInt("log_level", 2));
 
@@ -691,7 +691,7 @@ BOOL Wh_ModInit() {
         Wh_Log(L"not the shell process (%s); broker stays idle", module.c_str());
         return TRUE;
     }
-    lopw::LogInit(L"broker");
+    lopw::LogInit(L"broker", kModVersion);
     lopw::LogSetLevel(lopw::kLogInfo);
     // config.ini is read on the broker thread only; touching it here would race
     // with the thread we are about to start.

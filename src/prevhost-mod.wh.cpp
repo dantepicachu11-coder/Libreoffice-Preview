@@ -1256,7 +1256,7 @@ BOOL Wh_ModInit() {
     if (_wcsicmp(module.c_str(), L"prevhost.exe") != 0) {
         return TRUE;  // nothing to do in other processes
     }
-    lopw::LogInit(L"prevhost");
+    lopw::LogInit(L"prevhost", kModVersion);
     lopw::LogSetLevel(CfgInt("log_level", 2));
 
     // The shell's own log is preferred, but a low integrity prevhost cannot

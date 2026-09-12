@@ -18,6 +18,38 @@ The report must show:
   `{A5A41CC7-02CB-41D4-8C9B-9087040D6098}`),
 * Windhawk found.
 
+## 0. First: which build is actually loaded?
+
+Windhawk keeps the **compiled** mod until you press *Compile mod* again, so an
+old build can stay active while the editor already shows new source. Version
+0.4 and 0.5 also share the same mod id, so the log tag
+(`[local\@lo-explorer-preview]`) looks identical either way. Every line now
+carries the build:
+
+```
+[I 0.5.0 prevhost] LOPreview 0.5.0 in prevhost.exe (pid 4321, integrity low (4096))
+[I 0.5.0 broker]   LOPreview broker 0.5.0 starting in explorer.exe (pid 1234, integrity medium (8192))
+```
+
+If you see these, the **0.4** build is still running - the new code never ran:
+
+| Old log line | Where it comes from |
+|---|---|
+| `[WH] ... [125:Wh_ModInit]: PDF Preview Handler found` | the last line of the 0.4 file, its `Wh_ModInit` |
+| `[WH] ... [106:Initialize]: Initialize stream name='...'` | the 0.4 `StreamProxy::Initialize` |
+
+Neither string exists in 0.5.0. Note also that 0.4 stops logging right there:
+its `Initialize` returns on a failed temp-directory creation **without** logging
+anything further (that silent return is one of the things 0.5.0 replaced), so
+"I see the name and then nothing" is expected for the old build.
+
+To move to 0.5.0: open the mod in Windhawk, select all the source, replace it
+with the generated `lo-explorer-preview.wh.cpp`, press **Compile mod**, confirm
+no compile error (if there is one, Windhawk writes
+`%ProgramData%\Windhawk\EditorWorkspace\compiler_errors.log`), then re-enable.
+Do the same for `lo-preview-broker.wh.cpp`, whose `@include` must be
+`explorer.exe`.
+
 ## 1. Build and install
 
 ```powershell
