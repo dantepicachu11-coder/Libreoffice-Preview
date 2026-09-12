@@ -27,8 +27,25 @@ old build can stay active while the editor already shows new source. Version
 carries the build:
 
 ```
-[I 0.5.0 prevhost] LOPreview 0.5.0 in prevhost.exe (pid 4321, integrity low (4096))
-[I 0.5.0 broker]   LOPreview broker 0.5.0 starting in explorer.exe (pid 1234, integrity medium (8192))
+[I 0.5.1 prevhost] LOPreview 0.5.1 build 490c01f2 in prevhost.exe (pid 4321, integrity low (4096))
+[I 0.5.1 broker]   LOPreview broker 0.5.1 build b7091ce4 starting in explorer.exe (pid 1234, integrity medium (8192))
+```
+
+If the version reads **0.5.0** (or there is no build digest), the file you
+compiled is the one that failed with `use of undeclared identifier
+'ASSOCSTR_SHELLIDLIST'`; re-paste the generated file and press *Compile mod*
+again before testing.
+
+The generated files are checked like this before you paste them:
+
+```powershell
+# nothing may be printed (the call was removed in 0.5.1):
+Select-String -Path .\lo-explorer-preview.wh.cpp -Pattern 'ASSOCSTR_SHELLIDLIST'
+# must report 0.5.1:
+Select-String -Path .\lo-explorer-preview.wh.cpp -Pattern '@version'
+# must match the published checksum:
+(Get-FileHash .\lo-explorer-preview.wh.cpp -Algorithm SHA256).Hash
+(Get-FileHash .\lo-preview-broker.wh.cpp -Algorithm SHA256).Hash
 ```
 
 If you see these, the **0.4** build is still running - the new code never ran:

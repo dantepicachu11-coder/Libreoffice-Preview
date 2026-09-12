@@ -1,4 +1,4 @@
-# LOPreview 0.5.0
+# LOPreview 0.5.1
 
 **LibreOffice documents in the normal Windows File Explorer preview pane** —
 `.odt`, `.ods`, `.odp`, `.odg` (and `.odf`).
@@ -189,8 +189,32 @@ docs/TROUBLESHOOTING.md     failure modes and what to check
 | LibreOffice work dirs | `%LOCALAPPDATA%\LOPreview\tmp\` |
 | Windhawk log | Windhawk → the mod → *Show log* (per process) |
 
+### Verifying a download (0.5.1)
+
+| File | Build digest (in the log) | SHA-256 |
+|---|---|---|
+| `lo-explorer-preview.wh.cpp` | `490c01f2` | `bfdbaf62ecd620191f5dca59fb2e9ce670dd26ea393afcd817f348432a7f852a` |
+| `lo-preview-broker.wh.cpp` | `b7091ce4` | `2858e99d13291c65f970f0e493c989ea6e55479a429d1298bc02813fc0840d00` |
+
+```powershell
+Select-String -Path .\lo-explorer-preview.wh.cpp -Pattern 'ASSOCSTR_SHELLIDLIST'  # prints nothing
+Select-String -Path .\lo-explorer-preview.wh.cpp -Pattern '@version'              # prints 0.5.1
+(Get-FileHash .\lo-explorer-preview.wh.cpp -Algorithm SHA256).Hash
+```
+
+After compiling, the first log line must be
+`LOPreview 0.5.1 build 490c01f2 in prevhost.exe (…)`.
+
 ### Version history
 
+* **0.5.1** — build traceability and a compile fix:
+  * removed an invented `ASSOCSTR_SHELLIDLIST` fallback that failed to compile
+    against the real Windows SDK (the local stub SDK had wrongly accepted it,
+    and now mirrors the real `ASSOCF`/`ASSOCSTR` enums exactly),
+  * added `-luser32` to both `@compilerOptions` lines,
+  * every log line now carries the version **and** an 8-hex build digest of the
+    sources it was assembled from, so a log excerpt or a pasted file can always
+    be matched to a revision (see `docs/TESTING.md` §0).
 * **0.5.0** — complete rework of 0.4: medium-integrity broker in `explorer.exe`
   (the low-integrity prevhost cannot run LibreOffice usefully), file based
   hand-off that works in both integrity directions, PDF cache, LibreOffice

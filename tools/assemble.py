@@ -14,6 +14,7 @@ Usage:
   python3 tools/assemble.py [--check]
 """
 
+import hashlib
 import os
 import re
 import sys
@@ -43,6 +44,22 @@ GENERATED_NOTE = (
 def read(path):
     with open(path, encoding="utf-8") as fh:
         return fh.read()
+
+
+def build_id(role_path, header_paths):
+    """Short, reproducible digest of the sources a generated file came from.
+
+    Identical algorithm in installer/build-mod.ps1: sha256 of the concatenated
+    sha256 digests (hex, lower case) of the role source followed by lop_core.h
+    and lop_win.h, truncated to 8 characters.  It is logged at mod startup so a
+    log line can be matched to the exact sources that were compiled.
+    """
+    digests = []
+    for path in [role_path] + list(header_paths):
+        with open(path, "rb") as fh:
+            digests.append(hashlib.sha256(fh.read()).hexdigest())
+    combined = hashlib.sha256("".join(digests).encode("utf-8")).hexdigest()
+    return combined[:8]
 
 
 def strip_guard(text, names):
@@ -94,6 +111,14 @@ def assemble(role_file, headers):
             out.append("\n// ==== inlined from src/%s ====\n" % dep)
             out.append(strip_internal_includes(strip_guard(headers[dep], GUARDS[dep])))
     body = "".join(out)
+
+    # Stamp the build digest computed from the *sources* (never from this file,
+    # which would be circular).
+    role_path = os.path.join(SRC, role_file)
+    digest = build_id(role_path, [os.path.join(SRC, "lop_core.h"), os.path.join(SRC, "lop_win.h")])
+    if "@BUILDID@" not in body:
+        raise SystemExit("%s: no @BUILDID@ placeholder found" % role_file)
+    body = body.replace("@BUILDID@", digest)
 
     # Insert the "generated" banner right after the Windhawk metadata block.
     marker = "// ==/WindhawkMod==\n"

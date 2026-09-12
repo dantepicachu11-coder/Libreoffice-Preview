@@ -271,6 +271,17 @@ def main():
     check_class_methods(MODS[0], ["StreamProxy", "MemoryStream"])
     check_class_methods(GENERATED[0], ["StreamProxy", "MemoryStream"])
 
+    # Generated mods must be self-contained single files and carry a real build
+    # digest (a leftover placeholder means the assembler was not re-run).
+    for path in GENERATED:
+        text = read(path)
+        if "@BUILDID@" in text:
+            problems.append("%s: build digest placeholder was not substituted"
+                            % os.path.basename(path))
+        m = re.search(r'kBuildId\[\] = L"([0-9a-f]{8})"', text)
+        if not m:
+            problems.append("%s: no build digest found" % os.path.basename(path))
+
     # Generated mods must be self-contained single files.
     for path in GENERATED:
         text = read(path)

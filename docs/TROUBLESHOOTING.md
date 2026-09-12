@@ -51,7 +51,7 @@ The log states the exact reason; the fix is to get the broker running.
 ## The pane says "The PDF could not be previewed due to an internal error"
 
 This is the message the *PDF preview handler* produced, i.e. the handler was
-started but rejected the stream it was given. In LOPreview 0.5 this only happens
+started but rejected the stream it was given. In LOPreview 0.5.x this only happens
 if the handler was initialised with a stream that is not a PDF — check the
 client log for `IInitializeWithStream::Initialize failed on the generated PDF`
 or `cached PDF was rejected by the handler` (both log the HRESULT). Please
@@ -67,7 +67,7 @@ preview handler* talking: it was handed something that is not a PDF. In 0.5.0
 that can only happen after the client log says
 `IInitializeWithStream::Initialize failed on the generated PDF` or
 `cached PDF was rejected by the handler` (both print the HRESULT - please report
-it). If those lines are absent, the **old 0.4 build is still active**: check the
+it). If those lines are absent, the **old build is still active** (check the version and build digest in `TESTING.md` §0): check the
 version stamps described in `TESTING.md` §0. 0.4 forwards the ODF stream itself,
 which produces exactly this message.
 

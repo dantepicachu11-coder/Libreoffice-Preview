@@ -33,6 +33,26 @@ $headers = @{
     'lop_win.h'  = @{ File = (Join-Path $srcDir 'lop_win.h');  Guard = 'LOPREVIEW_WIN_H' }
 }
 
+function Get-FileDigest([string]$Path) {
+    return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+}
+
+# Same algorithm as tools/assemble.py: sha256 over the concatenated hex digests
+# of the role source + lop_core.h + lop_win.h, truncated to 8 characters.
+function Get-BuildId([string]$RolePath, [string[]]$HeaderPaths) {
+    $parts = @()
+    foreach ($path in (@($RolePath) + $HeaderPaths)) { $parts += Get-FileDigest $path }
+    $joined = [string]::Join('', $parts)
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = $sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($joined))
+    } finally {
+        $sha.Dispose()
+    }
+    $hex = ($bytes | ForEach-Object { $_.ToString('x2') }) -join ''
+    return $hex.Substring(0, 8)
+}
+
 function Read-Text([string]$Path) {
     return [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8)
 }
@@ -92,6 +112,10 @@ function Assemble([string]$RoleFile) {
         }
     }
     $body = $out.ToString()
+    $rolePath = Join-Path $srcDir $RoleFile
+    $digest = Get-BuildId $rolePath @($headers['lop_core.h'].File, $headers['lop_win.h'].File)
+    if ($body.IndexOf('@BUILDID@') -lt 0) { throw "$RoleFile has no @BUILDID@ placeholder" }
+    $body = $body.Replace('@BUILDID@', $digest)
     $marker = "// ==/WindhawkMod==`n"
     $index = $body.IndexOf($marker)
     if ($index -ge 0) {

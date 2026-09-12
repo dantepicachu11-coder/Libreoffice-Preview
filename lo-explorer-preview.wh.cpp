@@ -2,7 +2,7 @@
 // @id           lo-explorer-preview
 // @name         LibreOffice documents in the normal Explorer Preview Handler
 // @description  Lets the normal Explorer preview pane show .odt/.ods/.odp/.odg (and .odf) documents by converting them to PDF with LibreOffice and handing that PDF to the PDF preview handler Explorer already uses. No new preview app, no Office, no network.
-// @version      0.5.0
+// @version      0.5.1
 // @author       LOPreview
 // @include      prevhost.exe
 // @compilerOptions -std=c++20 -lole32 -luuid -lshlwapi -lshell32 -ladvapi32 -luser32
@@ -13,6 +13,10 @@
 // Assembled by tools/assemble.py from src/prevhost-mod.wh.cpp, src/lop_core.h and
 // src/lop_win.h.  Edit those files and re-run the assembler instead.
 // ---------------------------------------------------------------------------
+
+// LOPreview 0.5.1 - fixes the ASSOCSTR_SHELLIDLIST compile error of 0.5.0.
+// Stale-copy check: the string ASSOCSTR_SHELLIDLIST must NOT appear in this file,
+// and the header above must say 0.5.1.  See docs/TESTING.md section 0.
 //
 // How it works (see docs/ARCHITECTURE.md for the full picture):
 //
@@ -2317,7 +2321,11 @@ inline ConvertResult ConvertOdfToPdf(const ConvertRequest& req) {
 
 namespace {
 
-constexpr wchar_t kModVersion[] = L"0.5.0";
+constexpr wchar_t kModVersion[] = L"0.5.1";
+// Replaced by tools/assemble.py (and installer/build-mod.ps1) with a short
+// digest of the sources this file was assembled from, so a log line can be
+// matched against the exact source revision.
+constexpr wchar_t kBuildId[] = L"490c01f2";
 constexpr wchar_t kPreviewHandlerGuid[] = L"{8895b1c6-b41f-4c1c-a562-0d564250836f}";
 
 using CoCreateInstance_t = decltype(&CoCreateInstance);
@@ -3530,10 +3538,11 @@ BOOL Wh_ModInit() {
         lopw::LogSetFile(lopw::JoinPath(lopw::LowRootDir(), L"prevhost.log"));
     }
 
-    Wh_Log(L"LOPreview prevhost client %s starting (pid %u, integrity %s)", kModVersion,
-           GetCurrentProcessId(), lopw::IntegrityLevelText().c_str());
-    lopw::LogI(L"LOPreview " + std::wstring(kModVersion) + L" in prevhost.exe (pid " +
-               lopw::Num(GetCurrentProcessId()) + L", integrity " + lopw::IntegrityLevelText() + L")");
+    Wh_Log(L"LOPreview prevhost client %s build %s starting (pid %u, integrity %s)", kModVersion,
+           kBuildId, GetCurrentProcessId(), lopw::IntegrityLevelText().c_str());
+    lopw::LogI(L"LOPreview " + std::wstring(kModVersion) + L" build " + kBuildId +
+               L" in prevhost.exe (pid " + lopw::Num(GetCurrentProcessId()) + L", integrity " +
+               lopw::IntegrityLevelText() + L")");
 
     if (DiscoverPdfPreviewHandler()) {
         wchar_t text[64]{};

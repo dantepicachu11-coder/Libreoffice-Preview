@@ -2,7 +2,7 @@
 // @id           lo-preview-broker
 // @name         LibreOffice Preview Broker
 // @description  Converts ODF documents to PDF for the Explorer preview pane. Runs inside explorer.exe (medium integrity) so LibreOffice gets a normal user token; the prevhost mod talks to it through the low-integrity scratch folder.
-// @version      0.5.0
+// @version      0.5.1
 // @author       LOPreview
 // @include      explorer.exe
 // @compilerOptions -std=c++20 -lole32 -luuid -lshlwapi -lshell32 -ladvapi32 -luser32
@@ -13,6 +13,10 @@
 // Assembled by tools/assemble.py from src/broker-mod.wh.cpp, src/lop_core.h and
 // src/lop_win.h.  Edit those files and re-run the assembler instead.
 // ---------------------------------------------------------------------------
+
+// LOPreview 0.5.1 - fixes the ASSOCSTR_SHELLIDLIST compile error of 0.5.0.
+// Stale-copy check: the string ASSOCSTR_SHELLIDLIST must NOT appear in this file,
+// and the header above must say 0.5.1.  See docs/TESTING.md section 0.
 //
 // Why this mod exists
 // -------------------
@@ -2305,7 +2309,11 @@ inline ConvertResult ConvertOdfToPdf(const ConvertRequest& req) {
 
 namespace {
 
-constexpr wchar_t kModVersion[] = L"0.5.0";
+constexpr wchar_t kModVersion[] = L"0.5.1";
+// Replaced by tools/assemble.py (and installer/build-mod.ps1) with a short
+// digest of the sources this file was assembled from, so a log line can be
+// matched against the exact source revision.
+constexpr wchar_t kBuildId[] = L"b7091ce4";
 constexpr int kQueueDepth = 16;
 constexpr DWORD kScanIntervalMs = 1000;       // safety net poll
 constexpr DWORD kHeartbeatIntervalMs = 5000;  // broker.json refresh
@@ -2877,8 +2885,9 @@ DWORD WINAPI BrokerThread(LPVOID) {
     lopw::EnsureDirectory(lopw::BrokerTmpDir());
     lopw::EnsureDirectory(lopw::LowScratchDir());
 
-    lopw::LogI(L"LOPreview broker " + std::wstring(kModVersion) + L" starting in explorer.exe (pid " +
-               lopw::Num(GetCurrentProcessId()) + L", integrity " + lopw::IntegrityLevelText() + L")");
+    lopw::LogI(L"LOPreview broker " + std::wstring(kModVersion) + L" build " + kBuildId +
+               L" starting in explorer.exe (pid " + lopw::Num(GetCurrentProcessId()) + L", integrity " +
+               lopw::IntegrityLevelText() + L")");
 
     g_broker.soffice = lopw::FindLibreOffice(g_broker.cfg, g_broker.sofficeHow);
     if (g_broker.soffice.empty()) {
@@ -2967,7 +2976,7 @@ BOOL Wh_ModInit() {
     lopw::LogSetLevel(lopw::kLogInfo);
     // config.ini is read on the broker thread only; touching it here would race
     // with the thread we are about to start.
-    Wh_Log(L"LOPreview broker %s loading in explorer.exe", kModVersion);
+    Wh_Log(L"LOPreview broker %s build %s loading in explorer.exe", kModVersion, kBuildId);
 
     InitializeCriticalSection(&g_broker.cs);
     g_broker.csInit = true;
