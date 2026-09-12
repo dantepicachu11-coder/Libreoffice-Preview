@@ -5,7 +5,7 @@
 // @version      0.5.0
 // @author       LOPreview
 // @include      prevhost.exe
-// @compilerOptions -std=c++20 -lole32 -luuid -lshlwapi -lshell32 -ladvapi32
+// @compilerOptions -std=c++20 -lole32 -luuid -lshlwapi -lshell32 -ladvapi32 -luser32
 // ==/WindhawkMod==
 
 // ---------------------------------------------------------------------------
@@ -2428,21 +2428,12 @@ bool DiscoverPdfPreviewHandler() {
         return true;
     }
 
-    // 6. last resort: ask the Shell for the handler registration of .pdf via
-    //    AssocQueryString (covers handlers registered through less obvious
-    //    places without hard-coding a CLSID).
-    wchar_t value[256]{};
-    DWORD size = sizeof(value);
-    const std::wstring assocKey =
-        std::wstring(L"SystemFileAssociations\\.pdf\\ShellEx\\") + kPreviewHandlerGuid;
-    if (SUCCEEDED(AssocQueryStringW(ASSOCF_INIT_DEFAULTTOSTAR, ASSOCSTR_SHELLIDLIST, L".pdf", nullptr,
-                                    value, &size)) &&
-        ClsidFromRegistryText(value, clsid)) {
-        g_pdfHandlerClsid = clsid;
-        g_havePdfHandlerClsid = true;
-        g_pdfHandlerHow = L"AssocQueryString";
-        return true;
-    }
+    // Steps 1-5 cover every place Windows and the common PDF readers register a
+    // preview handler for .pdf: per-user classes, the user's chosen ProgID,
+    // SystemFileAssociations, machine-wide classes and the merged HKCR view.
+    // There is deliberately no AssocQueryString fallback - the ASSOCSTR enum
+    // has no member that returns a preview-handler CLSID, so such a call would
+    // be wrong by construction (and one earlier revision got that wrong).
     return false;
 }
 

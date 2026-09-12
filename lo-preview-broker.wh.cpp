@@ -5,7 +5,7 @@
 // @version      0.5.0
 // @author       LOPreview
 // @include      explorer.exe
-// @compilerOptions -std=c++20 -lole32 -luuid -lshlwapi -lshell32 -ladvapi32
+// @compilerOptions -std=c++20 -lole32 -luuid -lshlwapi -lshell32 -ladvapi32 -luser32
 // ==/WindhawkMod==
 
 // ---------------------------------------------------------------------------
