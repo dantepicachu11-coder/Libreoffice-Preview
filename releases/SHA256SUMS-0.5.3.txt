@@ -1,0 +1,5 @@
+c76774cf15ab1dedf07d90eed83ed90a425f87377a3a8f0c9501ed3f0bcd34ef  lo-explorer-preview.wh.cpp
+76aeb200734a5a897725189cc19e082b7b61d365cd6b7a23de59e0d16fbb1c02  lo-preview-broker.wh.cpp
+d5914a1c33d968a1d09f2a3b9731d3ce326d05b3c4e38e7f9aeb7fb8483afc0c  installer/install-user.ps1
+27a7e8fe37bd45d39c317740b819765c5dfab38b8e9d15cdb381f76ab0f4ce33  installer/uninstall-user.ps1
+d459466d0176b2f8a2deea5cbd5809d2dc80b7ed267989acc56e52b7a85f6608  installer/build-mod.ps1
