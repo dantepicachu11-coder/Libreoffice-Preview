@@ -637,9 +637,19 @@ inline Ini ParseIni(const std::string& text) {
     while (pos <= body.size()) {
         size_t eol = body.find('\n', pos);
         if (eol == std::string::npos) eol = body.size();
-        const std::string line = TrimAscii(body.substr(pos, eol - pos));
+        std::string line = TrimAscii(body.substr(pos, eol - pos));
         pos = eol + 1;
         if (line.empty() || line[0] == ';' || line[0] == '#') continue;
+        // Trailing comments: ';' or '#' preceded by whitespace (the generated
+        // config.ini documents every value this way).  A separator glued to
+        // the value (e.g. in a path) is kept.
+        for (size_t i = 1; i < line.size(); ++i) {
+            if ((line[i] == ';' || line[i] == '#') &&
+                (line[i - 1] == ' ' || line[i - 1] == '\t')) {
+                line = TrimAscii(line.substr(0, i));
+                break;
+            }
+        }
         const size_t eq = line.find('=');
         if (eq == std::string::npos) continue;
         const std::string key = ToLowerAscii(TrimAscii(line.substr(0, eq)));

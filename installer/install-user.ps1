@@ -41,7 +41,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$script:Version = '0.5.0'
+$script:Version = '0.5.3'
 $script:PreviewHandlerGuid = '{8895b1c6-b41f-4c1c-a562-0d564250836f}'
 $script:Problems = New-Object System.Collections.Generic.List[string]
 $script:Warnings = New-Object System.Collections.Generic.List[string]
@@ -82,17 +82,38 @@ function Get-RegValue {
     }
 }
 
-function Set-RegString {
-    param([string]$Path, [string]$Name, [string]$Value)
-    if (-not (Test-Path -Path $Path)) { New-Item -Path $Path -Force | Out-Null }
-    New-ItemProperty -Path $Path -Name $Name -Value $Value -PropertyType String -Force | Out-Null
+# The preview handler CLSID must be the key's DEFAULT (unnamed) value - this is
+# what the shell reads under ShellEx\{8895...}.  Builds 0.5.0/0.5.1 mistakenly
+# wrote a *named* value whose name was the handler GUID; these helpers write
+# the default value through the registry API and clean that old value up.
+function Open-HkcuKey([string]$SubPath, [bool]$Writable, [bool]$Create = $false) {
+    if ($Create) {
+        return [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey(
+            $SubPath, [Microsoft.Win32.RegistryKeyPermissionCheck]::ReadWriteSubTree)
+    }
+    return [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($SubPath, $Writable)
 }
 
-function Remove-RegValue {
-    param([string]$Path, [string]$Name)
-    if (Test-Path -Path $Path) {
-        Remove-ItemProperty -Path $Path -Name $Name -Force -ErrorAction SilentlyContinue
+function Set-HkcuDefault {
+    param([string]$SubPath, [string]$Value)
+    $key = Open-HkcuKey $SubPath $true $true
+    if (-not $key) { throw "cannot open/create HKCU\$SubPath" }
+    try {
+        $key.SetValue('', $Value, [Microsoft.Win32.RegistryValueKind]::String)
+    } finally { $key.Close() }
+}
+
+function Remove-HkcuValue {
+    param([string]$SubPath, [string]$Name)
+    $key = Open-HkcuKey $SubPath $true
+    if ($key) {
+        try { $key.DeleteValue($Name, $false) } catch { } finally { $key.Close() }
     }
+}
+
+# Relative to HKCU\Software\Classes:
+function Get-HandlerSubPath([string]$ProgId) {
+    return "Software\Classes\$ProgId\ShellEx\$script:PreviewHandlerGuid"
 }
 
 function Get-DataRoot { Join-Path $env:LOCALAPPDATA 'LOPreview' }
@@ -230,13 +251,23 @@ function Initialize-Directories {
     # The scratch folder must be writable by the *low integrity* prevhost
     # process.  %USERPROFILE%\AppData\LocalLow carries an inheritable low
     # mandatory label, so folders created below it inherit low integrity
-    # automatically (documented by Microsoft).  Verify what we can and say so
-    # honestly if it looks wrong.
+    # automatically (documented by Microsoft).  Set the label explicitly as
+    # well (belt and braces) and verify what we can.
+    try {
+        # (OI)(CI)L = object/container-inheriting low mandatory integrity label
+        & icacls.exe $low /setintegritylevel '(OI)(CI)L' | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warn ('icacls could not set the low integrity label on ' + $low +
+                        ' (exit ' + $LASTEXITCODE + '); inherited LocalLow permissions are usually enough')
+        }
+    } catch {
+        Write-Warn ('icacls failed: ' + $_.Exception.Message)
+    }
     try {
         $probe = Join-Path $scratch ('.probe-' + [Guid]::NewGuid().ToString('N'))
         Set-Content -LiteralPath $probe -Value 'x' -NoNewline -ErrorAction Stop
         Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue
-        Write-Ok 'the scratch folder is writable'
+        Write-Ok 'the scratch folder is writable and labelled for the low integrity preview host'
     } catch {
         Write-Bad ("the scratch folder is not writable: " + $_.Exception.Message)
     }
@@ -343,6 +374,7 @@ function Register-Associations($pdfHandler) {
             continue
         }
         $shellExPath = "HKCU:\Software\Classes\$($progInfo.ProgId)\ShellEx\$script:PreviewHandlerGuid"
+        $subPath = Get-HandlerSubPath $progInfo.ProgId
         $previous = Get-RegValue -Path $shellExPath -Name ''
 
         $entry = $entries | Where-Object { $_.Extension -eq $ext } | Select-Object -First 1
@@ -364,7 +396,11 @@ function Register-Associations($pdfHandler) {
             $entry.RegisteredAt = (Get-Date).ToString('o')
         }
         try {
-            Set-RegString -Path $shellExPath -Name $script:PreviewHandlerGuid -Value $pdfHandler.Clsid
+            # The shell reads the DEFAULT value of the ShellEx\{guid} key.
+            # Remove a stray NAMED value that builds 0.5.0/0.5.1 may have left
+            # behind, then write the default value and read it back.
+            Remove-HkcuValue -SubPath $subPath -Name $script:PreviewHandlerGuid
+            Set-HkcuDefault -SubPath $subPath -Value $pdfHandler.Clsid
             $check = Get-RegValue -Path $shellExPath -Name ''
             if ($check -ne $pdfHandler.Clsid) { throw "read-back mismatch ('$check')" }
             Write-Ok ("$ext -> $($progInfo.ProgId) -> " + $pdfHandler.Clsid)
@@ -387,11 +423,14 @@ function Restore-Associations {
     $restored = 0
     foreach ($entry in @($backup.Entries)) {
         $shellExPath = "HKCU:\Software\Classes\$($entry.ProgId)\ShellEx\$script:PreviewHandlerGuid"
+        $subPath = Get-HandlerSubPath $entry.ProgId
         if ([string]::IsNullOrWhiteSpace($entry.PreviousHandler)) {
-            Remove-RegValue -Path $shellExPath -Name $script:PreviewHandlerGuid
+            Remove-HkcuValue -SubPath $subPath -Name ''
+            Remove-HkcuValue -SubPath $subPath -Name $script:PreviewHandlerGuid
             Write-Ok ("$($entry.Extension): removed the preview handler registration (there was none before)")
         } else {
-            Set-RegString -Path $shellExPath -Name $script:PreviewHandlerGuid -Value $entry.PreviousHandler
+            Remove-HkcuValue -SubPath $subPath -Name $script:PreviewHandlerGuid
+            Set-HkcuDefault -SubPath $subPath -Value $entry.PreviousHandler
             Write-Ok ("$($entry.Extension): restored " + $entry.PreviousHandler)
         }
         $restored++

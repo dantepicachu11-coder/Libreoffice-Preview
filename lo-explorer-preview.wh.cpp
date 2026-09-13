@@ -2,7 +2,7 @@
 // @id           lo-explorer-preview
 // @name         LibreOffice documents in the normal Explorer Preview Handler
 // @description  Lets the normal Explorer preview pane show .odt/.ods/.odp/.odg (and .odf) documents by converting them to PDF with LibreOffice and handing that PDF to the PDF preview handler Explorer already uses. No new preview app, no Office, no network.
-// @version      0.5.1
+// @version      0.5.3
 // @author       LOPreview
 // @include      prevhost.exe
 // @compilerOptions -std=c++20 -lole32 -luuid -lshlwapi -lshell32 -ladvapi32 -luser32
@@ -14,9 +14,20 @@
 // src/lop_win.h.  Edit those files and re-run the assembler instead.
 // ---------------------------------------------------------------------------
 
-// LOPreview 0.5.1 - fixes the ASSOCSTR_SHELLIDLIST compile error of 0.5.0.
+// LOPreview 0.5.3 - correctness fixes before the end-to-end ODF test:
+//  * delete a stale <key>.err failure status before handing a new request to
+//    the broker, otherwise retrying a document that failed once returned the
+//    OLD error instantly without another conversion attempt;
+//  * keep the IStream that IInitializeWithFile::Initialize created alive for
+//    the handler's whole lifetime (the shell keeps its own stream alive in the
+//    normal path; a released file stream could be used after free);
+//  * only wrap unrelated preview handlers that actually implement
+//    IInitializeWithStream, so the proxy can never break the preview of other
+//    file types by wrapping a file-only legacy handler;
+//  * extra logging at every pipeline step (identity, spool, request, broker
+//    answer, IStream open, forward to the PDF handler).
 // Stale-copy check: the string ASSOCSTR_SHELLIDLIST must NOT appear in this file,
-// and the header above must say 0.5.1.  See docs/TESTING.md section 0.
+// and the header above must say 0.5.3.  See docs/TESTING.md section 0.
 //
 // How it works (see docs/ARCHITECTURE.md for the full picture):
 //
@@ -689,9 +700,19 @@ inline Ini ParseIni(const std::string& text) {
     while (pos <= body.size()) {
         size_t eol = body.find('\n', pos);
         if (eol == std::string::npos) eol = body.size();
-        const std::string line = TrimAscii(body.substr(pos, eol - pos));
+        std::string line = TrimAscii(body.substr(pos, eol - pos));
         pos = eol + 1;
         if (line.empty() || line[0] == ';' || line[0] == '#') continue;
+        // Trailing comments: ';' or '#' preceded by whitespace (the generated
+        // config.ini documents every value this way).  A separator glued to
+        // the value (e.g. in a path) is kept.
+        for (size_t i = 1; i < line.size(); ++i) {
+            if ((line[i] == ';' || line[i] == '#') &&
+                (line[i - 1] == ' ' || line[i - 1] == '\t')) {
+                line = TrimAscii(line.substr(0, i));
+                break;
+            }
+        }
         const size_t eq = line.find('=');
         if (eq == std::string::npos) continue;
         const std::string key = ToLowerAscii(TrimAscii(line.substr(0, eq)));
@@ -1991,7 +2012,7 @@ inline void DrainPipe(HANDLE pipe, std::string& sink, bool store) {
 inline ProcessResult RunProcessCapture(
     const std::wstring& exePath, const std::wstring& args, const std::wstring& cwd,
     const std::vector<std::pair<std::wstring, std::wstring>>& envOverrides, DWORD timeoutMs,
-    HANDLE cancelEvent, bool lowerPriority) {
+    HANDLE cancelEvent, bool lowerPriority, HANDLE abortEvent = nullptr) {
     ProcessResult result;
 
     std::wstring commandLine = L"\"" + exePath + L"\"";
@@ -2095,6 +2116,12 @@ inline ProcessResult RunProcessCapture(
             result.cancelled = true;
             break;
         }
+        // The mod is being unloaded (Windhawk recompiled, Explorer shutting
+        // down): stop immediately so no worker thread is left running mod code.
+        if (abortEvent && WaitForSingleObject(abortEvent, 0) == WAIT_OBJECT_0) {
+            result.cancelled = true;
+            break;
+        }
         if (timeoutMs && GetTickCount64() > deadline) {
             result.timedOut = true;
             break;
@@ -2167,7 +2194,8 @@ struct ConvertRequest {
     std::wstring sofficePath;
     std::wstring filterOptions;  // config pdf_filter, e.g. "pdf" or "pdf:writer_pdf_Export"
     DWORD timeoutMs = 120000;
-    HANDLE cancelEvent = nullptr;
+    HANDLE cancelEvent = nullptr;  // per request: signalled when the selection changes
+    HANDLE abortEvent = nullptr;   // process-wide: signalled when the mod is unloaded
     bool lowerPriority = true;
 };
 
@@ -2273,13 +2301,15 @@ inline ConvertResult ConvertOdfToPdf(const ConvertRequest& req) {
         env.emplace_back(L"TMP", req.tempDir);
     }
 
-    LogI(L"running soffice: " + args);
+    LogI(L"running soffice (timeout " + Num(req.timeoutMs / 1000) + L"s): " + args);
     const ProcessResult pr = RunProcessCapture(req.sofficePath, args, req.workDir, env,
-                                               req.timeoutMs, req.cancelEvent, req.lowerPriority);
+                                               req.timeoutMs, req.cancelEvent, req.lowerPriority,
+                                               req.abortEvent);
     out.exitCode = pr.exitCode;
     if (!pr.started) {
         out.error = L"CreateProcess failed for " + req.sofficePath + L" (error " +
                     Num(pr.startError) + L")";
+        LogErr(out.error);
         return out;
     }
     const std::string trimmed = lop::TrimAscii(pr.outputUtf8);
@@ -2289,28 +2319,37 @@ inline ConvertResult ConvertOdfToPdf(const ConvertRequest& req) {
     }
     if (pr.cancelled) {
         out.error = L"conversion cancelled";
+        LogI(out.error);
         return out;
     }
     if (pr.timedOut) {
         out.error = L"conversion timed out after " + Num(req.timeoutMs / 1000) + L" s";
+        LogErr(out.error);
         return out;
     }
+    LogI(L"soffice exited with code " + Num(pr.exitCode) +
+         (pr.jobAssigned ? L" (process tree joined to job)" : L" (WARNING: no job object)"));
 
     const std::wstring pdf = JoinPath(req.outputDir, PdfNameFor(req.inputPath));
+    LogI(L"expecting output PDF at " + pdf);
     uint64_t size = 0;
     uint64_t mtime = 0;
     if (!FileInfo(pdf, size, mtime) || size < 64) {
         // LibreOffice sometimes exits 0 without producing anything (password
         // protected documents, unsupported filter, corrupt file).
         out.error = L"LibreOffice did not produce a PDF (exit code " + Num(pr.exitCode) + L")";
+        LogErr(out.error + L" at " + pdf);
         return out;
     }
+    LogI(L"output PDF present: " + pdf + L" (" + Num(size) + L" bytes), validating");
     std::wstring pdfErr;
     if (!ValidatePdfFileQuick(pdf, size, pdfErr)) {
         out.error = L"generated file is not a valid PDF: " + pdfErr;
+        LogErr(out.error);
         DeleteQuiet(pdf);
         return out;
     }
+    LogI(L"output PDF validated: " + pdf);
     out.ok = true;
     out.pdfPath = pdf;
     return out;
@@ -2321,11 +2360,11 @@ inline ConvertResult ConvertOdfToPdf(const ConvertRequest& req) {
 
 namespace {
 
-constexpr wchar_t kModVersion[] = L"0.5.1";
+constexpr wchar_t kModVersion[] = L"0.5.3";
 // Replaced by tools/assemble.py (and installer/build-mod.ps1) with a short
 // digest of the sources this file was assembled from, so a log line can be
 // matched against the exact source revision.
-constexpr wchar_t kBuildId[] = L"490c01f2";
+constexpr wchar_t kBuildId[] = L"95977752";
 constexpr wchar_t kPreviewHandlerGuid[] = L"{8895b1c6-b41f-4c1c-a562-0d564250836f}";
 
 using CoCreateInstance_t = decltype(&CoCreateInstance);
@@ -2714,6 +2753,13 @@ bool WriteRequestFile(const lop::Request& req, std::wstring& error) {
                 lopw::Num(GetLastError()) + L")";
         return false;
     }
+    // A failure status left over from an earlier attempt for the SAME document
+    // state must not answer this new request: it would make every retry after
+    // a fixable failure (e.g. LibreOffice briefly busy) fail instantly.  The
+    // broker can only write a fresh <key>.err after seeing this request file.
+    if (!req.keyHex.empty()) {
+        lopw::DeleteQuiet(lopw::ScratchPath(req.keyHex + ".err"));
+    }
     const std::wstring path =
         lopw::ScratchPath(lop::Hex64(req.id) + ".req");
     if (!lopw::WriteTextAtomic(path, lop::BuildRequest(req))) {
@@ -2721,6 +2767,8 @@ bool WriteRequestFile(const lop::Request& req, std::wstring& error) {
                 L")";
         return false;
     }
+    lopw::LogI(L"wrote broker request " + path + L" for key " +
+               lop::Utf8ToWide(req.keyHex.empty() ? std::string("(none)") : req.keyHex));
     return true;
 }
 
@@ -2729,7 +2777,8 @@ enum class SpoolResult { Ok, Failed };
 // Copies the document stream into the low scratch folder (used when the host
 // did not give us a file path).  Also computes the content hash for the key.
 SpoolResult SpoolStream(IStream* stream, const std::wstring& target, uint64_t& hashOut,
-                        std::wstring& error) {
+                        uint64_t& sizeOut, std::wstring& error) {
+    sizeOut = 0;
     LARGE_INTEGER zero{};
     if (FAILED(stream->Seek(zero, STREAM_SEEK_SET, nullptr))) {
         error = L"the document stream is not seekable";
@@ -2775,6 +2824,7 @@ SpoolResult SpoolStream(IStream* stream, const std::wstring& target, uint64_t& h
     CloseHandle(h);
     if (!ok) lopw::DeleteQuiet(target);
     hashOut = hash;
+    sizeOut = ok ? total : 0;
     return ok ? SpoolResult::Ok : SpoolResult::Failed;
 }
 
@@ -2819,7 +2869,10 @@ WaitResult WaitForBrokerResult(const std::string& keyHex, HANDLE cancelEvent, DW
             } else {
                 result.message = L"the broker reported a failure (status file unreadable)";
             }
-            lopw::DeleteQuiet(statusPath);
+            // Do NOT delete the status: another prevhost instance may be
+            // waiting for the same key.  A fresh attempt removes it before
+            // writing its request, and the maintenance sweep deletes stale
+            // ones after an hour.
             result.outcome = WaitOutcome::Reported;
             return result;
         }
@@ -2899,7 +2952,12 @@ bool DirectConvert(const DocIdentity& id, const std::wstring& spooledDocument,
     creq.inputPath = input;
     creq.workDir = scratch;
     creq.outputDir = lopw::JoinPath(scratch, L"out");
-    creq.profileDir = lopw::JoinPath(scratch, L"lo-profile");
+    // One profile per document: two concurrent soffice instances must never
+    // share -env:UserInstallation (the launcher would forward to the other
+    // instance and mixing --convert-to jobs there is unreliable).
+    creq.profileDir =
+        lopw::JoinPath(lopw::JoinPath(scratch, L"lo-profile"),
+                       lop::Utf8ToWide(id.keyHex));
     creq.tempDir = scratch;
     creq.sofficePath = soffice;
     creq.filterOptions = lop::Utf8ToWide(Cfg().ini.Get("pdf_filter", "pdf"));
@@ -2982,9 +3040,15 @@ class StreamProxy final : public IInitializeWithStream,
         // use it to abort a still-running hand-off.
         if (cancelEvent_) SetEvent(cancelEvent_);
         HRESULT hr = innerPreview_ ? innerPreview_->Unload() : S_OK;
+        // The handler must be unloaded first, so it cannot read a stream we
+        // then release underneath it.
         if (pdfStream_) {
             pdfStream_->Release();
             pdfStream_ = nullptr;
+        }
+        if (sourceStream_) {
+            sourceStream_->Release();
+            sourceStream_ = nullptr;
         }
         return hr;
     }
@@ -3033,7 +3097,8 @@ class StreamProxy final : public IInitializeWithStream,
     IPreviewHandler* innerPreview_ = nullptr;
     IObjectWithSite* innerSite_ = nullptr;
     IUnknown* site_ = nullptr;
-    IStream* pdfStream_ = nullptr;  // kept alive for the handler's lifetime
+    IStream* pdfStream_ = nullptr;  // converted PDF, kept for the handler's lifetime
+    IStream* sourceStream_ = nullptr;  // file stream made by Initialize(LPCWSTR)
     HANDLE cancelEvent_ = nullptr;
     CLSID createdClsid_{};
     bool createdIsPdfHandler_ = false;
@@ -3042,6 +3107,7 @@ class StreamProxy final : public IInitializeWithStream,
 
 StreamProxy::~StreamProxy() {
     if (pdfStream_) pdfStream_->Release();
+    if (sourceStream_) sourceStream_->Release();
     if (cancelEvent_) CloseHandle(cancelEvent_);
     if (site_) site_->Release();
     if (innerSite_) innerSite_->Release();
@@ -3182,7 +3248,10 @@ HRESULT StreamProxy::HandOff(const std::string& data, const std::wstring& name) 
     }
     auto* stream = new (std::nothrow) MemoryStream(data, name);
     if (!stream) return E_OUTOFMEMORY;
+    lopw::LogI(L"forwarding in-memory diagnostic PDF '" + name + L"' (" +
+               lopw::Num(data.size()) + L" bytes) to the PDF handler");
     const HRESULT hr = innerInitStream_->Initialize(stream, STGM_READ);
+    lopw::LogI(L"IInitializeWithStream::Initialize(diagnostic PDF) returned " + lopw::HrText(hr));
     if (SUCCEEDED(hr)) {
         if (pdfStream_) pdfStream_->Release();
         pdfStream_ = stream;  // the handler may keep reading after Initialize
@@ -3213,8 +3282,11 @@ HRESULT StreamProxy::PreviewDocument(IStream* stream, DocIdentity& id, DWORD grf
                                                      FILE_ATTRIBUTE_NORMAL, FALSE, nullptr,
                                                      &fileStream);
             if (SUCCEEDED(hr) && fileStream) {
-                lopw::LogI(L"cache hit: " + cached);
+                lopw::LogI(L"cache hit: " + cached + L" (" + lopw::Num(size) +
+                           L" bytes); forwarding to the PDF handler");
                 const HRESULT initHr = innerInitStream_->Initialize(fileStream, grfMode);
+                lopw::LogI(L"IInitializeWithStream::Initialize(cached PDF) returned " +
+                           lopw::HrText(initHr));
                 if (SUCCEEDED(initHr)) {
                     if (pdfStream_) pdfStream_->Release();
                     pdfStream_ = fileStream;
@@ -3245,7 +3317,9 @@ HRESULT StreamProxy::PreviewDocument(IStream* stream, DocIdentity& id, DWORD grf
                 "spool-" + std::to_string(GetCurrentProcessId()) + "-" +
                 std::to_string(InterlockedIncrement(&g_seq)) + id.extForConversion;
             const std::wstring tmp = lopw::ScratchPath(spoolName);
-            if (SpoolStream(stream, tmp, hash, error) == SpoolResult::Ok) {
+            uint64_t spooledBytes = 0;
+            lopw::LogI(L"no file path from the host: spooling the document stream to " + tmp);
+            if (SpoolStream(stream, tmp, hash, spooledBytes, error) == SpoolResult::Ok) {
                 const std::string contentKey = lop::ContentKeyHex(hash);
                 const std::wstring finalName = lop::Utf8ToWide(contentKey + id.extForConversion);
                 const std::wstring finalPath = lopw::ScratchPath(lop::WideToUtf8(finalName));
@@ -3253,6 +3327,9 @@ HRESULT StreamProxy::PreviewDocument(IStream* stream, DocIdentity& id, DWORD grf
                 if (MoveFileW(tmp.c_str(), finalPath.c_str())) {
                     spooled = finalPath;
                     id.keyHex = contentKey;
+                    lopw::LogI(L"stream spooled to " + finalPath + L" (" +
+                               lopw::Num(spooledBytes) + L" bytes), content key " +
+                               lop::Utf8ToWide(contentKey));
                     // A previous run may have produced this exact content.
                     const std::wstring cached = lopw::CachePdfPath(id.keyHex);
                     uint64_t csize = 0, cmtime = 0;
@@ -3326,7 +3403,11 @@ HRESULT StreamProxy::PreviewDocument(IStream* stream, DocIdentity& id, DWORD grf
                             cached.c_str(), STGM_READ | STGM_SHARE_DENY_NONE, FILE_ATTRIBUTE_NORMAL,
                             FALSE, nullptr, &fileStream);
                         if (SUCCEEDED(hr) && fileStream) {
+                            lopw::LogI(L"broker produced " + cached +
+                                       L"; forwarding the PDF IStream to the PDF handler");
                             const HRESULT initHr = innerInitStream_->Initialize(fileStream, grfMode);
+                            lopw::LogI(L"IInitializeWithStream::Initialize(broker PDF) returned " +
+                                       lopw::HrText(initHr));
                             if (SUCCEEDED(initHr)) {
                                 if (pdfStream_) pdfStream_->Release();
                                 pdfStream_ = fileStream;
@@ -3377,7 +3458,11 @@ HRESULT StreamProxy::PreviewDocument(IStream* stream, DocIdentity& id, DWORD grf
                                                      FILE_ATTRIBUTE_NORMAL, FALSE, nullptr,
                                                      &fileStream);
             if (SUCCEEDED(hr) && fileStream) {
+                lopw::LogI(L"direct conversion produced " + pdfPath +
+                           L"; forwarding the PDF IStream to the PDF handler");
                 const HRESULT initHr = innerInitStream_->Initialize(fileStream, grfMode);
+                lopw::LogI(L"IInitializeWithStream::Initialize(direct PDF) returned " +
+                           lopw::HrText(initHr));
                 if (SUCCEEDED(initHr)) {
                     if (pdfStream_) pdfStream_->Release();
                     pdfStream_ = fileStream;
@@ -3469,7 +3554,14 @@ HRESULT StreamProxy::Initialize(LPCWSTR filePath, DWORD grfMode) {
         return innerInitFile_ ? innerInitFile_->Initialize(filePath, grfMode) : E_NOINTERFACE;
     }
     const HRESULT init = InitializeInternal(stream, filePath, grfMode);
-    stream->Release();
+    if (SUCCEEDED(init)) {
+        // This stream is OURS (not the shell's), and the handler may keep
+        // reading it until Unload: hold it for the proxy's lifetime.
+        if (sourceStream_) sourceStream_->Release();
+        sourceStream_ = stream;
+    } else {
+        stream->Release();
+    }
     return init;
 }
 
@@ -3496,6 +3588,19 @@ HRESULT WINAPI CoCreateInstance_Hook(REFCLSID rclsid, LPUNKNOWN pUnkOuter, DWORD
     if (!isPdfHandler && !CfgBool("redirect_any_handler", true)) return hr;
     auto* inner = static_cast<IUnknown*>(*ppv);
     if (!LooksLikePreviewHandler(inner)) return hr;
+    // The proxy works by intercepting IInitializeWithStream.  A handler that
+    // only implements IInitializeWithItem/File must be left untouched, or its
+    // (unrelated, e.g. image/text) preview would break.  The PDF handler we
+    // intercept always supports stream initialisation; if it did not, wrapping
+    // could not work either, so gate on it in every case.
+    {
+        IInitializeWithStream* streamInit = nullptr;
+        if (FAILED(inner->QueryInterface(IID_PPV_ARGS(&streamInit))) || !streamInit) {
+            lopw::LogD(L"not wrapping a handler without IInitializeWithStream");
+            return hr;
+        }
+        streamInit->Release();
+    }
     const void* innerForLog = inner;
     auto* proxy = new (std::nothrow) StreamProxy(inner, rclsid, isPdfHandler);
     if (!proxy) return hr;

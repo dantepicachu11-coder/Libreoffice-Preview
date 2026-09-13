@@ -282,6 +282,18 @@ static void TestIni() {
     CHECK_EQ(ParseIni("x=-5").GetInt("x", 3), -5);
     CHECK_EQ(ParseIni("x=abc").GetInt("x", 3), 3);
     CHECK_EQ(ParseIni("x=9999999999999").GetInt("x", 3), 3);
+    // Trailing comments, as generated in config.ini: separator needs
+    // preceding whitespace so glued punctuation in values survives.
+    const Ini tc =
+        ParseIni("enabled=1                 ; master switch\r\n"
+                 "path=C:\\a b;x   ; comment\r\n"
+                 "name=value#notcomment glued\n"
+                 "empty=             ; nothing here\r\n");
+    CHECK(tc.GetBool("enabled", false));
+    CHECK_EQ(tc.Get("path", ""), std::string("C:\\a b;x"));
+    CHECK_EQ(tc.Get("name", ""), std::string("value#notcomment glued"));
+    CHECK_EQ(tc.Get("empty", "def"), std::string(""));  // explicit empty value
+    CHECK(!tc.Has("missing"));
 }
 
 static void TestUrls() {

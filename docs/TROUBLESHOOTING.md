@@ -63,13 +63,17 @@ so this would be new information).
 ## The pane still shows the PDF handler's own error message
 
 "The PDF could not be displayed/previewed due to an internal error" is the *PDF
-preview handler* talking: it was handed something that is not a PDF. In 0.5.0
-that can only happen after the client log says
-`IInitializeWithStream::Initialize failed on the generated PDF` or
-`cached PDF was rejected by the handler` (both print the HRESULT - please report
-it). If those lines are absent, the **old build is still active** (check the version and build digest in `TESTING.md` §0): check the
-version stamps described in `TESTING.md` §0. 0.4 forwards the ODF stream itself,
-which produces exactly this message.
+preview handler* talking: it was handed something that is not a PDF. With
+**0.5.3** the client never forwards the ODF stream itself, so this message
+means either an old mod build is still compiled (check the version and build
+digest in `TESTING.md` §0) or the log contains
+`IInitializeWithStream::Initialize(...) failed/rejected` with an HRESULT -
+report that HRESULT plus the 10 log lines above it. Note that the installer in
+0.5.0/0.5.1 wrote a *named* registry value where the shell reads the key's
+**default** value; the 0.5.3 installer fixes this and cleans the stray value
+up, so re-run `install-user.ps1` and check the `[ok] <ext> -> ... -> {CLSID}`
+read-back lines. The 0.4 proof of concept forwarded the ODF stream itself,
+which produced exactly this message.
 
 ## Nothing happens at all / no log lines from prevhost
 
