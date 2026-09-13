@@ -1,3 +1,8 @@
-# Release archives and staging (build artifacts, published on GitHub, not in Git)
+# Local release staging (the published archives live under /releases)
 /dist/
+dist/
+
+# Ignore archives everywhere except the tracked release folder
 *.zip
+!releases/
+!releases/*.zip
