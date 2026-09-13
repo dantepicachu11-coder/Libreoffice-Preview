@@ -1,0 +1,44 @@
+LOPreview 0.5.3 - LibreOffice documents in the normal Explorer preview pane
+
+=== Directories and configuration =====================================
+  -> data root     : C:\Users\username\AppData\Local\LOPreview
+  -> low scratch   : C:\Users\username\AppData\LocalLow\LOPreview\scratch
+  [ok]   the scratch folder is writable and labelled for the low integrity preview host
+  [ok]   default config written: C:\Users\username\AppData\Local\LOPreview\config.ini
+
+=== System ============================================================
+  [info] Windows      : Windows 10 Pro 25H2 (build 26200.9445)
+  [info] Architecture : 64-bit
+  [info] User         : COMPUTERNAME\username (standard)
+  [info] PowerShell   : 5.1.26100.9444
+
+=== LibreOffice =======================================================
+  [ok]   soffice.exe   : C:\Program Files\LibreOffice\program\soffice.exe
+  [info] file version  : 26.8.0.3
+
+=== PDF preview handler ===============================================
+  [ok]   handler CLSID : {A5A41CC7-02CB-41D4-8C9B-9087040D6098}
+  [info] discovered via: HKCU\Software\Classes\.pdf
+  [info] handler name  : PdfPreviewHandler
+
+=== Windhawk ==========================================================
+  [ok]   windhawk.exe  : C:\Program Files\Windhawk\windhawk.exe
+  [info] mod file      : C:\ProgramData\Windhawk\Engine\Mods\32\local@lo-explorer-preview_0.5.2_734126.dll
+  [info] mod file      : C:\ProgramData\Windhawk\Engine\Mods\64\local@lo-explorer-preview_0.5.2_734126.dll
+  [info] mod file      : C:\ProgramData\Windhawk\ModsSource\local@lo-explorer-preview.wh.cpp
+
+=== Preview handler associations ======================================
+  [ok]   .odt -> LibreOffice.WriterDocument.1 -> {A5A41CC7-02CB-41D4-8C9B-9087040D6098}
+  [ok]   .ods -> LibreOffice.CalcDocument.1 -> {A5A41CC7-02CB-41D4-8C9B-9087040D6098}
+  [ok]   .odp -> LibreOffice.ImpressDocument.1 -> {A5A41CC7-02CB-41D4-8C9B-9087040D6098}
+  [ok]   .odg -> LibreOffice.DrawDocument.1 -> {A5A41CC7-02CB-41D4-8C9B-9087040D6098}
+  [ok]   .odf -> LibreOffice.MathDocument.1 -> {A5A41CC7-02CB-41D4-8C9B-9087040D6098}
+
+LOPreview installer stopped with an unexpected error:
+  The property 'Entries' cannot be found on this object. Verify that the property exists and can be set.
+  at At C:\Users\username\Downloads\LOPreview-0.5.3\installer\install-user.ps1:412 char:5
++     $backup.Entries = $entries
++     ~~~~~~~~~~~~~~~~~~~~~~~~~~
+at Register-Associations, C:\Users\username\Downloads\LOPreview-0.5.3\installer\install-user.ps1: line 412
+at Main, C:\Users\username\Downloads\LOPreview-0.5.3\installer\install-user.ps1: line 507
+at <ScriptBlock>, C:\Users\username\Downloads\LOPreview-0.5.3\installer\install-user.ps1: line 561
