@@ -21,7 +21,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$script:Version = '0.5.0'
+$script:Version = '0.5.3'
 $script:PreviewHandlerGuid = '{8895b1c6-b41f-4c1c-a562-0d564250836f}'
 $script:Problems = New-Object System.Collections.Generic.List[string]
 
@@ -40,6 +40,33 @@ function Write-Bad([string]$t) {
 function Get-DataRoot { Join-Path $env:LOCALAPPDATA 'LOPreview' }
 function Get-LowRoot  { Join-Path (Join-Path $env:USERPROFILE 'AppData') 'LocalLow\LOPreview' }
 function Get-BackupPath { Join-Path (Get-DataRoot) 'preview-associations.json' }
+
+# Default (unnamed) registry values are what the shell reads; the .NET
+# RegistryKey API handles them correctly, including deletion.
+function Open-HkcuKey([string]$SubPath, [bool]$Writable, [bool]$Create = $false) {
+    if ($Create) {
+        return [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey(
+            $SubPath, [Microsoft.Win32.RegistryKeyPermissionCheck]::ReadWriteSubTree)
+    }
+    return [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($SubPath, $Writable)
+}
+function Set-HkcuDefault {
+    param([string]$SubPath, [string]$Value)
+    $key = Open-HkcuKey $SubPath $true $true
+    if (-not $key) { throw "cannot open/create HKCU\$SubPath" }
+    try { $key.SetValue('', $Value, [Microsoft.Win32.RegistryValueKind]::String) }
+    finally { $key.Close() }
+}
+function Remove-HkcuValue {
+    param([string]$SubPath, [string]$Name)
+    $key = Open-HkcuKey $SubPath $true
+    if ($key) {
+        try { $key.DeleteValue($Name, $false) } catch { } finally { $key.Close() }
+    }
+}
+function Get-HandlerSubPath([string]$ProgId) {
+    return "Software\Classes\$ProgId\ShellEx\$script:PreviewHandlerGuid"
+}
 
 function Get-RegValue {
     param([string]$Path, [string]$Name)
@@ -75,15 +102,17 @@ function Restore-Associations {
     }
     foreach ($entry in $entries) {
         $shellExPath = "HKCU:\Software\Classes\$($entry.ProgId)\ShellEx\$script:PreviewHandlerGuid"
+        $subPath = Get-HandlerSubPath $entry.ProgId
         try {
             if ([string]::IsNullOrWhiteSpace($entry.PreviousHandler)) {
-                if (Test-Path -Path $shellExPath) {
-                    Remove-ItemProperty -Path $shellExPath -Name $script:PreviewHandlerGuid -Force -ErrorAction SilentlyContinue
-                }
+                # Remove the default value (what the shell uses) and the stray
+                # named value left by builds 0.5.0/0.5.1, if present.
+                Remove-HkcuValue -SubPath $subPath -Name ''
+                Remove-HkcuValue -SubPath $subPath -Name $script:PreviewHandlerGuid
                 Write-Ok ("$($entry.Extension): preview handler registration removed (there was none before LOPreview)")
             } else {
-                if (-not (Test-Path -Path $shellExPath)) { New-Item -Path $shellExPath -Force | Out-Null }
-                New-ItemProperty -Path $shellExPath -Name $script:PreviewHandlerGuid -Value $entry.PreviousHandler -PropertyType String -Force | Out-Null
+                Remove-HkcuValue -SubPath $subPath -Name $script:PreviewHandlerGuid
+                Set-HkcuDefault -SubPath $subPath -Value $entry.PreviousHandler
                 Write-Ok ("$($entry.Extension): restored " + $entry.PreviousHandler)
             }
             $entry.Restored = $true

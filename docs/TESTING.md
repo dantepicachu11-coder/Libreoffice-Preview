@@ -27,21 +27,22 @@ old build can stay active while the editor already shows new source. Version
 carries the build:
 
 ```
-[I 0.5.1 prevhost] LOPreview 0.5.1 build 490c01f2 in prevhost.exe (pid 4321, integrity low (4096))
-[I 0.5.1 broker]   LOPreview broker 0.5.1 build b7091ce4 starting in explorer.exe (pid 1234, integrity medium (8192))
+[I 0.5.3 prevhost] LOPreview 0.5.3 build 95977752 in prevhost.exe (pid 4321, integrity low (4096))
+[I 0.5.3 broker]   LOPreview broker 0.5.3 build 71b89b5d starting in explorer.exe (pid 1234, integrity medium (8192))
 ```
 
-If the version reads **0.5.0** (or there is no build digest), the file you
-compiled is the one that failed with `use of undeclared identifier
+If the version reads anything older than **0.5.3** (or there is no build
+digest), re-paste the generated file and compile again. 0.5.0 was the build
+that failed with `use of undeclared identifier
 'ASSOCSTR_SHELLIDLIST'`; re-paste the generated file and press *Compile mod*
 again before testing.
 
 The generated files are checked like this before you paste them:
 
 ```powershell
-# nothing may be printed (the call was removed in 0.5.1):
+# nothing may be printed (the call never existed in 0.5.2+):
 Select-String -Path .\lo-explorer-preview.wh.cpp -Pattern 'ASSOCSTR_SHELLIDLIST'
-# must report 0.5.1:
+# must report 0.5.3:
 Select-String -Path .\lo-explorer-preview.wh.cpp -Pattern '@version'
 # must match the published checksum:
 (Get-FileHash .\lo-explorer-preview.wh.cpp -Algorithm SHA256).Hash
@@ -60,7 +61,7 @@ its `Initialize` returns on a failed temp-directory creation **without** logging
 anything further (that silent return is one of the things 0.5.0 replaced), so
 "I see the name and then nothing" is expected for the old build.
 
-To move to 0.5.0: open the mod in Windhawk, select all the source, replace it
+To move to 0.5.3: open the mod in Windhawk, select all the source, replace it
 with the generated `lo-explorer-preview.wh.cpp`, press **Compile mod**, confirm
 no compile error (if there is one, Windhawk writes
 `%ProgramData%\Windhawk\EditorWorkspace\compiler_errors.log`), then re-enable.
@@ -101,7 +102,7 @@ Broker log (`lo-preview-broker` in explorer.exe, also
 `%LOCALAPPDATA%\LOPreview\logs\lopreview.log`):
 
 ```
-LOPreview broker 0.5.0 starting in explorer.exe (pid 1234, integrity medium (8192))
+LOPreview broker 0.5.3 build 71b89b5d starting in explorer.exe (pid 1234, integrity medium (8192))
 LibreOffice: C:\Program Files\LibreOffice\program\soffice.exe (found via registry ...)
 ```
 
@@ -114,7 +115,7 @@ Client log (`lo-explorer-preview` in prevhost.exe — prevhost only starts when
 you select a file):
 
 ```
-LOPreview 0.5.0 in prevhost.exe (pid 4321, integrity low (4096))
+LOPreview 0.5.3 build 95977752 in prevhost.exe (pid 4321, integrity low (4096))
 PDF preview handler: {A5A41CC7-02CB-41D4-8C9B-9087040D6098} (found via UserChoice(...))
 Explorer broker: running (pid 1234), soffice C:\Program Files\LibreOffice\program\soffice.exe
 CoCreateInstance hook installed
@@ -190,7 +191,7 @@ Instant, no LibreOffice process (`Get-Process soffice*` shows nothing).
 tests/run-all.sh
 ```
 
-* `tests/run-tests.sh` — 195 portable core checks.
+* `tests/run-tests.sh` — 200 portable core checks.
 * `tests/check-windows-code.py` — symbol/definition/balance checks.
 * `tests/compile-check.sh` — compiles both generated mods against the stub SDK.
 

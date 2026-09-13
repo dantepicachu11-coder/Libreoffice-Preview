@@ -730,7 +730,7 @@ inline void DrainPipe(HANDLE pipe, std::string& sink, bool store) {
 inline ProcessResult RunProcessCapture(
     const std::wstring& exePath, const std::wstring& args, const std::wstring& cwd,
     const std::vector<std::pair<std::wstring, std::wstring>>& envOverrides, DWORD timeoutMs,
-    HANDLE cancelEvent, bool lowerPriority) {
+    HANDLE cancelEvent, bool lowerPriority, HANDLE abortEvent = nullptr) {
     ProcessResult result;
 
     std::wstring commandLine = L"\"" + exePath + L"\"";
@@ -834,6 +834,12 @@ inline ProcessResult RunProcessCapture(
             result.cancelled = true;
             break;
         }
+        // The mod is being unloaded (Windhawk recompiled, Explorer shutting
+        // down): stop immediately so no worker thread is left running mod code.
+        if (abortEvent && WaitForSingleObject(abortEvent, 0) == WAIT_OBJECT_0) {
+            result.cancelled = true;
+            break;
+        }
         if (timeoutMs && GetTickCount64() > deadline) {
             result.timedOut = true;
             break;
@@ -906,7 +912,8 @@ struct ConvertRequest {
     std::wstring sofficePath;
     std::wstring filterOptions;  // config pdf_filter, e.g. "pdf" or "pdf:writer_pdf_Export"
     DWORD timeoutMs = 120000;
-    HANDLE cancelEvent = nullptr;
+    HANDLE cancelEvent = nullptr;  // per request: signalled when the selection changes
+    HANDLE abortEvent = nullptr;   // process-wide: signalled when the mod is unloaded
     bool lowerPriority = true;
 };
 
@@ -1012,13 +1019,15 @@ inline ConvertResult ConvertOdfToPdf(const ConvertRequest& req) {
         env.emplace_back(L"TMP", req.tempDir);
     }
 
-    LogI(L"running soffice: " + args);
+    LogI(L"running soffice (timeout " + Num(req.timeoutMs / 1000) + L"s): " + args);
     const ProcessResult pr = RunProcessCapture(req.sofficePath, args, req.workDir, env,
-                                               req.timeoutMs, req.cancelEvent, req.lowerPriority);
+                                               req.timeoutMs, req.cancelEvent, req.lowerPriority,
+                                               req.abortEvent);
     out.exitCode = pr.exitCode;
     if (!pr.started) {
         out.error = L"CreateProcess failed for " + req.sofficePath + L" (error " +
                     Num(pr.startError) + L")";
+        LogErr(out.error);
         return out;
     }
     const std::string trimmed = lop::TrimAscii(pr.outputUtf8);
@@ -1028,28 +1037,37 @@ inline ConvertResult ConvertOdfToPdf(const ConvertRequest& req) {
     }
     if (pr.cancelled) {
         out.error = L"conversion cancelled";
+        LogI(out.error);
         return out;
     }
     if (pr.timedOut) {
         out.error = L"conversion timed out after " + Num(req.timeoutMs / 1000) + L" s";
+        LogErr(out.error);
         return out;
     }
+    LogI(L"soffice exited with code " + Num(pr.exitCode) +
+         (pr.jobAssigned ? L" (process tree joined to job)" : L" (WARNING: no job object)"));
 
     const std::wstring pdf = JoinPath(req.outputDir, PdfNameFor(req.inputPath));
+    LogI(L"expecting output PDF at " + pdf);
     uint64_t size = 0;
     uint64_t mtime = 0;
     if (!FileInfo(pdf, size, mtime) || size < 64) {
         // LibreOffice sometimes exits 0 without producing anything (password
         // protected documents, unsupported filter, corrupt file).
         out.error = L"LibreOffice did not produce a PDF (exit code " + Num(pr.exitCode) + L")";
+        LogErr(out.error + L" at " + pdf);
         return out;
     }
+    LogI(L"output PDF present: " + pdf + L" (" + Num(size) + L" bytes), validating");
     std::wstring pdfErr;
     if (!ValidatePdfFileQuick(pdf, size, pdfErr)) {
         out.error = L"generated file is not a valid PDF: " + pdfErr;
+        LogErr(out.error);
         DeleteQuiet(pdf);
         return out;
     }
+    LogI(L"output PDF validated: " + pdf);
     out.ok = true;
     out.pdfPath = pdf;
     return out;

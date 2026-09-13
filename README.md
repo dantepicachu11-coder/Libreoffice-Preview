@@ -1,4 +1,4 @@
-# LOPreview 0.5.1
+# LOPreview 0.5.3
 
 **LibreOffice documents in the normal Windows File Explorer preview pane** —
 `.odt`, `.ods`, `.odp`, `.odg` (and `.odf`).
@@ -189,24 +189,54 @@ docs/TROUBLESHOOTING.md     failure modes and what to check
 | LibreOffice work dirs | `%LOCALAPPDATA%\LOPreview\tmp\` |
 | Windhawk log | Windhawk → the mod → *Show log* (per process) |
 
-### Verifying a download (0.5.1)
+### Verifying a download (0.5.3)
 
 | File | Build digest (in the log) | SHA-256 |
 |---|---|---|
-| `lo-explorer-preview.wh.cpp` | `490c01f2` | `bfdbaf62ecd620191f5dca59fb2e9ce670dd26ea393afcd817f348432a7f852a` |
-| `lo-preview-broker.wh.cpp` | `b7091ce4` | `2858e99d13291c65f970f0e493c989ea6e55479a429d1298bc02813fc0840d00` |
+| `lo-explorer-preview.wh.cpp` | `95977752` | `c76774cf15ab1dedf07d90eed83ed90a425f87377a3a8f0c9501ed3f0bcd34ef` |
+| `lo-preview-broker.wh.cpp` | `71b89b5d` | `76aeb200734a5a897725189cc19e082b7b61d365cd6b7a23de59e0d16fbb1c02` |
 
 ```powershell
 Select-String -Path .\lo-explorer-preview.wh.cpp -Pattern 'ASSOCSTR_SHELLIDLIST'  # prints nothing
-Select-String -Path .\lo-explorer-preview.wh.cpp -Pattern '@version'              # prints 0.5.1
+Select-String -Path .\lo-explorer-preview.wh.cpp -Pattern '@version'              # prints 0.5.3
 (Get-FileHash .\lo-explorer-preview.wh.cpp -Algorithm SHA256).Hash
 ```
 
 After compiling, the first log line must be
-`LOPreview 0.5.1 build 490c01f2 in prevhost.exe (…)`.
+`LOPreview 0.5.3 build 95977752 in prevhost.exe (…)`.
 
 ### Version history
 
+* **0.5.3** — pre end-to-end-test correctness pass (both mods + installer):
+  * **installer fix (important):** the shell reads a preview handler CLSID from
+    the key's **default** registry value; builds 0.5.0/0.5.1 wrote a *named*
+    value instead. The installer now writes the default value through the
+    registry API, verifies it by read-back, removes the stray named value left
+    by older builds, and sets the low-integrity label on the LocalLow scratch
+    folder explicitly (`icacls /setintegritylevel (OI)(CI)L`);
+  * a stale `<key>.err` failure status no longer makes every retry fail
+    instantly without a new conversion attempt (deleted before each request,
+    and by the broker when a new job is accepted); not deleting it on read lets
+    several prevhost instances wait for the same answer;
+  * duplicate requests for a document already converting are answered by that
+    job (shared cache/status) and their request files are removed, instead of
+    triggering repeated LibreOffice runs after a failure; rapidly re-selecting
+    the same document refreshes the queued job's sequence number so it cannot
+    be wrongly skipped as "superseded";
+  * mod unload aborts every running LibreOffice job (the global stop event is
+    wired into the process runner) and joins all worker threads, so
+    recompiling/removing the broker mod cannot leave threads in unmapped code;
+  * the prevhost proxy keeps the file stream it creates in
+    `IInitializeWithFile::Initialize` alive for the handler's lifetime, and
+    only wraps preview handlers that actually implement `IInitializeWithStream`
+    so unrelated file-type previews cannot be broken;
+  * direct (low-integrity) fallback conversions get one LibreOffice profile per
+    document instead of one shared profile;
+  * `config.ini` trailing comments are now parsed correctly;
+  * extra logging at every pipeline step: identity, spool, request write,
+    LibreOffice launch/exit code, expected and validated output PDF, IStream
+    creation and the HRESULT of forwarding it to the PDF handler;
+  * flat ODF extensions (`.fodt/.fods/.fodp/.fodg`) are covered by cleanup.
 * **0.5.1** — build traceability and a compile fix:
   * removed an invented `ASSOCSTR_SHELLIDLIST` fallback that failed to compile
     against the real Windows SDK (the local stub SDK had wrongly accepted it,

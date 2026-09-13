@@ -2,15 +2,27 @@
 // @id           lo-preview-broker
 // @name         LibreOffice Preview Broker
 // @description  Converts ODF documents to PDF for the Explorer preview pane. Runs inside explorer.exe (medium integrity) so LibreOffice gets a normal user token; the prevhost mod talks to it through the low-integrity scratch folder.
-// @version      0.5.1
+// @version      0.5.3
 // @author       LOPreview
 // @include      explorer.exe
 // @compilerOptions -std=c++20 -lole32 -luuid -lshlwapi -lshell32 -ladvapi32 -luser32
 // ==/WindhawkMod==
 
-// LOPreview 0.5.1 - fixes the ASSOCSTR_SHELLIDLIST compile error of 0.5.0.
+// LOPreview 0.5.3 - correctness fixes for hand-off and shutdown:
+//  * duplicate requests for a key already being converted are answered by the
+//    running job (they poll the same cache/<key>.pdf and <key>.err), so their
+//    request files are removed immediately instead of being converted over and
+//    over after a failure;
+//  * a queued job for the same document gets its sequence number refreshed, so
+//    re-selecting the same file rapidly can no longer skip its own conversion;
+//  * a stale <key>.err from an older failed attempt is deleted when a new
+//    request is accepted, so retries are never poisoned by yesterday's error;
+//  * mod unload now aborts every running LibreOffice job (the global stop
+//    event is wired into the process runner) and joins all worker threads, so
+//    recompiling/removing the mod cannot leave threads in unmapped code;
+//  * flat ODF extensions (.fodt/.fods/.fodp/.fodg) are covered by cleanup.
 // Stale-copy check: the string ASSOCSTR_SHELLIDLIST must NOT appear in this file,
-// and the header above must say 0.5.1.  See docs/TESTING.md section 0.
+// and the header above must say 0.5.3.  See docs/TESTING.md section 0.
 //
 // Why this mod exists
 // -------------------
@@ -37,7 +49,7 @@
 
 namespace {
 
-constexpr wchar_t kModVersion[] = L"0.5.1";
+constexpr wchar_t kModVersion[] = L"0.5.3";
 // Replaced by tools/assemble.py (and installer/build-mod.ps1) with a short
 // digest of the sources this file was assembled from, so a log line can be
 // matched against the exact source revision.
@@ -188,6 +200,8 @@ std::wstring ScratchRequestPath(const lop::Request& req) {
 void WriteErrorStatus(const std::string& keyHex, const std::wstring& message) {
     const std::wstring path = lopw::ScratchPath(keyHex + ".err");
     const std::string text = lop::WideToUtf8(message);
+    lopw::LogWarn(L"conversion failed for key " + lop::Utf8ToWide(keyHex) + L": " + message +
+                  L" (status " + path + L")");
     if (!lopw::WriteTextAtomic(path, text)) {
         lopw::LogWarn(L"cannot write status file " + path + L" (error " + lopw::Num(GetLastError()) +
                       L")");
@@ -350,6 +364,9 @@ void RunJob(Job& job) {
     creq.filterOptions = lop::Utf8ToWide(g_broker.cfg.Get("pdf_filter", "pdf"));
     creq.timeoutMs = static_cast<DWORD>(CfgInt("timeout_seconds", 120)) * 1000u;
     creq.cancelEvent = job.cancelEvent;
+    // The global stop event lets a mod unload kill the LibreOffice tree too,
+    // even for a job whose own (supersede) event is not signalled.
+    creq.abortEvent = g_broker.stopEvent;
     creq.lowerPriority = CfgBool("lower_priority", true);
 
     lopw::ConvertResult result = lopw::ConvertOdfToPdf(creq);
@@ -400,7 +417,10 @@ DWORD WINAPI WorkerThread(LPVOID param) {
         Job job{};
         bool have = false;
         EnterCriticalSection(&g_broker.cs);
-        if (g_broker.queueCount > 0) {
+        // Never start a new conversion once unloading has begun: Wh_ModUninit
+        // closes the cancel events of whatever stays queued.
+        if (g_broker.queueCount > 0 &&
+            !InterlockedCompareExchange(&g_broker.exitNow, 0, 0)) {
             job = g_broker.queue[0];
             for (int i = 1; i < g_broker.queueCount; ++i) g_broker.queue[i - 1] = g_broker.queue[i];
             g_broker.queueCount--;
@@ -508,15 +528,39 @@ void ProcessRequestFile(const std::wstring& path) {
     while (g_broker.latestSeq.size() > 32) g_broker.latestSeq.erase(g_broker.latestSeq.begin());
 
     bool duplicate = false;
+    bool queuedDuplicate = false;
     for (const std::string& k : g_broker.inFlightKeys) {
         if (k == req.keyHex) duplicate = true;
     }
-    if (!duplicate) g_broker.inFlightKeys.push_back(req.keyHex);
+    if (duplicate) {
+        // If the existing job is still queued (not picked up by a worker),
+        // refresh its sequence number: a rapid de-select/re-select of the SAME
+        // document must not cause the only job for that key to be skipped as
+        // "superseded".  A running job cannot be superseded anyway.
+        for (int i = 0; i < g_broker.queueCount; ++i) {
+            if (g_broker.queue[i].req.keyHex == req.keyHex) {
+                queuedDuplicate = true;
+                if (req.seq > g_broker.queue[i].req.seq) {
+                    g_broker.queue[i].req.seq = req.seq;
+                }
+                break;
+            }
+        }
+    } else {
+        g_broker.inFlightKeys.push_back(req.keyHex);
+    }
     LeaveCriticalSection(&g_broker.cs);
 
     if (duplicate) {
-        lopw::LogI(L"a conversion for this document is already running: " + path);
-        return;  // the running job deletes the request file when it finishes
+        // Every client for this key polls the same cache/<key>.pdf and
+        // scratch/<key>.err, so the job already queued/running answers all
+        // waiters.  The duplicate request file is removed now: leaving it used
+        // to trigger repeated LibreOffice runs after a failed conversion as
+        // each scan rediscovered it.
+        lopw::LogI(L"a conversion for this document is already " +
+                   std::wstring(queuedDuplicate ? L"queued" : L"running") + L": " + path);
+        lopw::DeleteQuiet(path);
+        return;
     }
 
     Job job{};
@@ -524,9 +568,20 @@ void ProcessRequestFile(const std::wstring& path) {
     job.reqPath = path;
     job.enqueuedTick = GetTickCount64();
     job.cancelEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    // A failure status from a previous attempt must never answer THIS request
+    // (the client deletes it too, but do it here as well for older clients).
+    lopw::DeleteQuiet(statusPath);
     if (!EnqueueJob(job)) {
         EnterCriticalSection(&g_broker.cs);
-        g_broker.inFlightKeys.clear();
+        // Only drop the keys of rejected jobs; clearing the whole list used to
+        // allow concurrent duplicate conversions of in-flight documents.
+        for (size_t i = 0; i < g_broker.inFlightKeys.size();) {
+            if (g_broker.inFlightKeys[i] == req.keyHex) {
+                g_broker.inFlightKeys.erase(g_broker.inFlightKeys.begin() + i);
+            } else {
+                ++i;
+            }
+        }
         LeaveCriticalSection(&g_broker.cs);
         if (job.cancelEvent) CloseHandle(job.cancelEvent);
         lopw::LogWarn(L"queue is full, rejecting " + path);
@@ -535,9 +590,8 @@ void ProcessRequestFile(const std::wstring& path) {
         lopw::DeleteQuiet(path);
         return;
     }
-    if (g_broker.queueCount == 1 && g_broker.runningJobs == 0) {
-        lopw::LogD(L"queued " + path);
-    }
+    lopw::LogI(L"queued conversion request " + path + L" for key " +
+               lop::Utf8ToWide(req.keyHex));
 }
 
 void ScanScratchDir() {
@@ -554,8 +608,8 @@ void ScanScratchDir() {
 }
 
 void RunMaintenance() {
-    const wchar_t* scratchExts[] = {L".req", L".tmp", L".odt", L".pdf", L".err", L".odg", L".odp",
-                                    L".ods", L".odf"};
+    const wchar_t* scratchExts[] = {L".req", L".tmp", L".pdf", L".err", L".odt", L".ods", L".odp",
+                                    L".odg", L".odf", L".fodt", L".fods", L".fodp", L".fodg"};
     lopw::CleanupDirByAge(lopw::LowScratchDir(), kScratchMaxAgeMs, 256ull * 1024ull * 1024ull,
                           scratchExts, ARRAYSIZE(scratchExts));
 
@@ -679,12 +733,14 @@ DWORD WINAPI BrokerThread(LPVOID) {
 
     InterlockedExchange(&g_broker.exitNow, 1);
     SetEvent(g_broker.stopEvent);
-    // Give running conversions a moment to notice cancellation.
-    for (int i = 0; i < 40; ++i) {
-        if (g_broker.runningJobs == 0 && g_broker.queueCount == 0) break;
+    // stopEvent is wired into every RunProcessCapture call as an abort event,
+    // so a running LibreOffice tree is terminated via its job object.  Give
+    // that up to ~6 s (job termination itself waits up to 5 s).
+    for (int i = 0; i < 120; ++i) {
+        if (g_broker.runningJobs == 0) break;
         Sleep(50);
     }
-    lopw::LogI(L"broker stopped");
+    lopw::LogI(L"broker dispatch thread stopped");
     CoUninitialize();
     return 0;
 }
@@ -723,25 +779,49 @@ void Wh_ModUninit() {
     InterlockedExchange(&g_broker.exitNow, 1);
     if (g_broker.stopEvent) SetEvent(g_broker.stopEvent);
     if (g_broker.thread) {
-        WaitForSingleObject(g_broker.thread, 5000);
+        // The dispatch thread tells the workers to drain and stops watching
+        // the scratch folder.
+        if (WaitForSingleObject(g_broker.thread, 10000) != WAIT_OBJECT_0) {
+            Wh_Log(L"broker dispatch thread did not stop in time");
+        }
         CloseHandle(g_broker.thread);
         g_broker.thread = nullptr;
     }
     // Every worker must be gone before Windhawk unloads this module: a thread
-    // still executing mod code after unmapping would kill explorer.exe.
-    for (int i = 0; i < g_broker.workerCount; ++i) {
-        if (g_broker.workers[i]) {
-            const DWORD wait = WaitForSingleObject(g_broker.workers[i], 8000);
-            if (wait != WAIT_OBJECT_0) {
-                Wh_Log(L"worker %d did not stop in time", i);
-            }
+    // still executing mod code after unmapping would kill explorer.exe.  Wait
+    // for them all at once so a terminating LibreOffice tree on one worker
+    // does not eat the timeout budget of the others.
+    const int n = g_broker.workerCount;
+    if (n > 0) {
+        HANDLE handles[4]{};
+        for (int i = 0; i < n; ++i) handles[i] = g_broker.workers[i];
+        const DWORD wait = WaitForMultipleObjects(static_cast<DWORD>(n), handles, TRUE, 20000);
+        if (wait != WAIT_OBJECT_0 && wait < WAIT_OBJECT_0 + static_cast<DWORD>(n)) {
+            Wh_Log(L"not all conversion workers stopped (wait=%lu)", wait);
+        }
+        for (int i = 0; i < n; ++i) {
             CloseHandle(g_broker.workers[i]);
             g_broker.workers[i] = nullptr;
         }
+        g_broker.workerCount = 0;
     }
-    g_broker.workerCount = 0;
-    if (g_broker.workEvent) CloseHandle(g_broker.workEvent);
-    if (g_broker.stopEvent) CloseHandle(g_broker.stopEvent);
+    // Cancel events of jobs that never left the queue: close them here because
+    // the workers deliberately did not pop them once exitNow was set.
+    EnterCriticalSection(&g_broker.cs);
+    for (int i = 0; i < g_broker.queueCount; ++i) {
+        if (g_broker.queue[i].cancelEvent) CloseHandle(g_broker.queue[i].cancelEvent);
+    }
+    g_broker.queueCount = 0;
+    g_broker.inFlightKeys.clear();
+    LeaveCriticalSection(&g_broker.cs);
+    if (g_broker.workEvent) {
+        CloseHandle(g_broker.workEvent);
+        g_broker.workEvent = nullptr;
+    }
+    if (g_broker.stopEvent) {
+        CloseHandle(g_broker.stopEvent);
+        g_broker.stopEvent = nullptr;
+    }
     if (g_broker.csInit) DeleteCriticalSection(&g_broker.cs);
     lopw::LogSetFile(L"");
 }
